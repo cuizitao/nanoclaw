@@ -138,14 +138,25 @@ export class WeComChannel implements Channel {
     try {
       // Get the original frame for this chat (needed for reply)
       const frame = this.frameMap.get(jid);
-      logger.info({ jid, hasFrame: !!frame, frameKeys: frame ? Object.keys(frame) : [] }, '获取 frame 结果');
+      logger.info(
+        { jid, hasFrame: !!frame, frameKeys: frame ? Object.keys(frame) : [] },
+        '获取 frame 结果',
+      );
 
       if (!frame) {
         logger.warn({ jid }, '未找到原始消息帧，无法回复');
         return;
       }
 
-      logger.info({ jid, frameCmd: frame.cmd, hasHeaders: !!frame.headers, reqId: frame.headers?.req_id }, 'frame 详情');
+      logger.info(
+        {
+          jid,
+          frameCmd: frame.cmd,
+          hasHeaders: !!frame.headers,
+          reqId: frame.headers?.req_id,
+        },
+        'frame 详情',
+      );
 
       // WeCom has a 2048 character limit per message
       const MAX_LENGTH = 2048;
@@ -236,7 +247,14 @@ export class WeComChannel implements Channel {
         const chatJid = this.getJid(chatId, chatType);
         this.frameMap.set(chatJid, frame);
 
-        logger.info({ msgContent: msg.text?.content, from: msg.from?.userid, chattype: msg.chattype }, '准备处理文本消息');
+        logger.info(
+          {
+            msgContent: msg.text?.content,
+            from: msg.from?.userid,
+            chattype: msg.chattype,
+          },
+          '准备处理文本消息',
+        );
         logger.debug({ frame }, '收到企业微信文本消息');
         this.handleTextMessage(msg);
         logger.info('handleTextMessage 调用完成');
@@ -330,7 +348,7 @@ export class WeComChannel implements Channel {
       timestamp,
       msg.chatname || (isGroup ? undefined : senderName),
       'wecom',
-      isGroup
+      isGroup,
     );
 
     // Check if this chat is registered
@@ -353,10 +371,7 @@ export class WeComChannel implements Channel {
       is_from_me: false,
     });
 
-    logger.info(
-      { chatJid, sender: senderName, content },
-      '企业微信消息已接收'
-    );
+    logger.info({ chatJid, sender: senderName, content }, '企业微信消息已接收');
   }
 
   /**
@@ -411,13 +426,7 @@ export class WeComChannel implements Channel {
 
     // Store chat metadata
     const isGroup = msg.chattype === 'group';
-    this.opts.onChatMetadata(
-      chatJid,
-      timestamp,
-      undefined,
-      'wecom',
-      isGroup
-    );
+    this.opts.onChatMetadata(chatJid, timestamp, undefined, 'wecom', isGroup);
 
     // Deliver message with placeholder
     this.opts.onMessage(chatJid, {
@@ -456,11 +465,14 @@ export class WeComChannel implements Channel {
     buffer.push(content);
 
     // Set timeout to clean up stale streams (6 minutes)
-    const timeout = setTimeout(() => {
-      logger.warn({ streamId }, '流式消息超时，清理缓冲区');
-      this.streamMessageBuffer.delete(streamId);
-      this.streamTimeouts.delete(streamId);
-    }, 6 * 60 * 1000);
+    const timeout = setTimeout(
+      () => {
+        logger.warn({ streamId }, '流式消息超时，清理缓冲区');
+        this.streamMessageBuffer.delete(streamId);
+        this.streamTimeouts.delete(streamId);
+      },
+      6 * 60 * 1000,
+    );
     this.streamTimeouts.set(streamId, timeout);
 
     // Check if this is the last chunk
@@ -538,10 +550,7 @@ export class WeComChannel implements Channel {
   /**
    * Send a single message to WeCom
    */
-  private async sendSingleMessage(
-    frame: any,
-    text: string
-  ): Promise<void> {
+  private async sendSingleMessage(frame: any, text: string): Promise<void> {
     if (!this.bot) {
       logger.warn('企业微信未连接，无法发送消息');
       return;
@@ -551,16 +560,25 @@ export class WeComChannel implements Channel {
       // Use reply() method with the original frame
       // Note: WeCom reply() method only supports markdown and text types
       // Use markdown format for better compatibility
-      logger.debug({ reqId: frame.headers?.req_id, contentLength: text.length }, '发送企业微信消息');
+      logger.debug(
+        { reqId: frame.headers?.req_id, contentLength: text.length },
+        '发送企业微信消息',
+      );
 
       await this.bot.reply(frame, {
         msgtype: 'markdown',
         markdown: { content: text },
       });
 
-      logger.info({ reqId: frame.headers?.req_id, length: text.length }, '企业微信消息已发送');
+      logger.info(
+        { reqId: frame.headers?.req_id, length: text.length },
+        '企业微信消息已发送',
+      );
     } catch (err) {
-      logger.error({ reqId: frame.headers?.req_id, err }, '企业微信消息发送失败');
+      logger.error(
+        { reqId: frame.headers?.req_id, err },
+        '企业微信消息发送失败',
+      );
       throw err;
     }
   }

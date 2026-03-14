@@ -272,7 +272,8 @@ async function runAgent(
 
   // Test mode: skip container and echo message back
   const envConfig = readEnvFile(['TEST_MODE']);
-  const testMode = envConfig.TEST_MODE === 'true' || process.env.TEST_MODE === 'true';
+  const testMode =
+    envConfig.TEST_MODE === 'true' || process.env.TEST_MODE === 'true';
 
   if (testMode) {
     const channel = findChannel(channels, chatJid);
