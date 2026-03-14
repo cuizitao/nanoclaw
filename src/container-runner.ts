@@ -25,7 +25,7 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { detectAuthMode } from './credential-proxy.js';
+import { detectAuthMode, type AuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -76,16 +76,10 @@ function buildVolumeMounts(
       readonly: true,
     });
 
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Credentials are injected by the credential proxy, never exposed to containers.
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
+    // Note: .env shadowing is handled in the container entrypoint script
+    // (Dockerfile) using mount --bind, which works for Apple Container.
+    // We don't mount /dev/null here because Apple Container doesn't support
+    // file-over-file mounts (only directory mounts).
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -216,6 +210,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   isMain: boolean,
+  authMode: AuthMode,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -232,7 +227,6 @@ function buildContainerArgs(
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
   // OAuth mode:   SDK exchanges placeholder token for temp API key,
   //               proxy injects real OAuth token on that exchange request.
-  const authMode = detectAuthMode();
   if (authMode === 'api-key') {
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
@@ -241,6 +235,10 @@ function buildContainerArgs(
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
+
+  // Set memory limit for containers (default 1GB is too small for Claude Code)
+  // 2GB for all containers due to system memory constraints
+  args.push('-m', '2G');
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -283,10 +281,85 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
+  // Detect auth mode BEFORE shadowing .env (otherwise we can't read it)
+  const authMode = detectAuthMode();
+
+  // For main containers, temporarily shadow .env to prevent secrets leakage
+  // Apple Container doesn't support file-over-file mounts, so we backup
+  // and restore the .env file around container execution.
+  const projectRoot = process.cwd();
+  const envFile = path.join(projectRoot, '.env');
+  const envBackup = path.join(projectRoot, '.env.nanoclaw.bak');
+  let shadowedEnv = false;
+
+  if (group.isMain && fs.existsSync(envFile)) {
+    try {
+      // Check if .env is already shadowed (empty and read-only)
+      const envStats = fs.statSync(envFile);
+      const envContent = fs.readFileSync(envFile, 'utf8');
+
+      if (envStats.size === 0 || envContent.trim() === '') {
+        // Already shadowed, skip
+        logger.warn('.env file is already empty, skipping shadow');
+      } else {
+        fs.renameSync(envFile, envBackup);
+        fs.writeFileSync(envFile, '', { mode: 0o444 }); // Empty, read-only .env
+        shadowedEnv = true;
+        logger.info('.env file shadowed for main container');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to shadow .env, continuing anyway');
+    }
+  }
+
+  // Ensure we restore .env even if container crashes
+  const restoreEnv = () => {
+    if (shadowedEnv) {
+      try {
+        if (fs.existsSync(envBackup)) {
+          // Remove the shadow file first
+          if (fs.existsSync(envFile)) {
+            fs.unlinkSync(envFile);
+          }
+          // Restore from backup
+          fs.renameSync(envBackup, envFile);
+          logger.info('.env file restored from backup');
+        } else {
+          // No backup, just remove the shadow
+          if (fs.existsSync(envFile)) {
+            fs.unlinkSync(envFile);
+          }
+          logger.warn('.env backup not found, removed shadow file');
+        }
+      } catch (err) {
+        logger.error({ err }, 'Failed to restore .env file');
+      }
+    }
+  };
+
+  // Add process-level error handling to restore .env even on crash
+  const restoreOnExit = () => {
+    restoreEnv();
+  };
+
+  process.on('exit', restoreOnExit);
+  process.on('SIGINT', restoreOnExit);
+  process.on('SIGTERM', restoreOnExit);
+  process.on('uncaughtException', (err) => {
+    logger.error({ err }, 'Uncaught exception, restoring .env before exit');
+    restoreEnv();
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ reason }, 'Unhandled rejection, restoring .env before exit');
+    restoreEnv();
+    process.exit(1);
+  });
+
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.isMain, authMode);
 
   logger.debug(
     {
@@ -315,8 +388,15 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
+    // Ensure PATH includes Homebrew for container command
+    const env = {
+      ...process.env,
+      PATH: `/opt/homebrew/bin:/opt/homebrew/sbin:${process.env.PATH}`,
+    };
+
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      env,
     });
 
     onProcess(container, containerName);
@@ -442,6 +522,8 @@ export async function runContainerAgent(
 
     container.on('close', (code) => {
       clearTimeout(timeout);
+      // Restore .env regardless of exit code
+      restoreEnv();
       const duration = Date.now() - startTime;
 
       if (timedOut) {
@@ -637,6 +719,7 @@ export async function runContainerAgent(
 
     container.on('error', (err) => {
       clearTimeout(timeout);
+      restoreEnv();
       logger.error(
         { group: group.name, containerName, error: err },
         'Container spawn error',

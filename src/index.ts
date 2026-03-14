@@ -42,6 +42,7 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { readEnvFile } from './env.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
@@ -269,6 +270,30 @@ async function runAgent(
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
 
+  // Test mode: skip container and echo message back
+  const envConfig = readEnvFile(['TEST_MODE']);
+  const testMode = envConfig.TEST_MODE === 'true' || process.env.TEST_MODE === 'true';
+
+  if (testMode) {
+    const channel = findChannel(channels, chatJid);
+
+    const echoMessage = `🧪 测试模式 - 已收到您的消息：
+
+📝 内容: ${prompt}
+👤 发送者: ${chatJid}
+📁 群组: ${group.name}
+✅ 企业微信集成工作正常！
+
+(要启用 AI 功能，请设置 TEST_MODE=false 并构建容器镜像)`;
+
+    if (channel) {
+      await channel.sendMessage(chatJid, echoMessage);
+    }
+
+    logger.info({ group: group.name, prompt }, 'Test mode: message echoed');
+    return 'success';
+  }
+
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
   writeTasksSnapshot(
@@ -465,7 +490,44 @@ function ensureContainerSystemRunning(): void {
   cleanupOrphans();
 }
 
+/**
+ * Check and restore .env file if it's empty (from previous crash)
+ * This ensures NanoClaw can start properly even if a previous run
+ * crashed before restoring the .env file.
+ */
+function checkAndRestoreEnv(): void {
+  const projectRoot = process.cwd();
+  const envFile = path.join(projectRoot, '.env');
+  const envBackup = path.join(projectRoot, '.env.nanoclaw.bak');
+
+  try {
+    // Check if .env exists and is empty
+    if (fs.existsSync(envFile)) {
+      const envStats = fs.statSync(envFile);
+      const envContent = fs.readFileSync(envFile, 'utf8');
+
+      // If .env is empty or read-only shadow, restore from backup
+      if (envStats.size === 0 || envContent.trim() === '') {
+        if (fs.existsSync(envBackup)) {
+          const backupContent = fs.readFileSync(envBackup, 'utf8');
+          if (backupContent.trim().length > 0) {
+            // Valid backup found, restore it
+            fs.unlinkSync(envFile);
+            fs.renameSync(envBackup, envFile);
+            logger.info('Restored .env file from backup (was empty)');
+          }
+        } else {
+          logger.warn('.env file is empty but no backup found');
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug({ err }, 'Failed to check .env file, continuing anyway');
+  }
+}
+
 async function main(): Promise<void> {
+  checkAndRestoreEnv();
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');

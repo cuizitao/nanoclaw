@@ -16,9 +16,18 @@
     "setup": "tsx setup/index.ts",
     "auth": "tsx src/whatsapp-auth.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "config:backup": "node scripts/config-backup.js backup",
+    "config:restore": "node scripts/config-backup.js restore",
+    "config:verify": "node scripts/config-backup.js verify",
+    "config:sync": "node scripts/config-backup.js sync",
+    "config:status": "node scripts/config-backup.js status",
+    "config:setup": "node scripts/config-backup.js setup",
+    "health": "node scripts/health-check.js",
+    "test:wecom": "node scripts/test-wecom.js"
   },
   "dependencies": {
+    "@wecom/aibot-node-sdk": "^1.0.1",
     "better-sqlite3": "^11.8.1",
     "grammy": "^1.39.3",
     "cron-parser": "^5.5.0",
